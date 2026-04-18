@@ -8,6 +8,8 @@
     <!-- Firebase SDK (Compat Version untuk kemudahan integrasi) -->
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-storage-compat.js"></script>
 
     <style>
         /* CSS VARIABLES - Untuk memudahkan ganti warna dasar */
@@ -255,6 +257,25 @@
             border-top: 1px solid rgba(255,255,255,0.1);
         }
 
+        .vote-container {
+            display: flex;
+            gap: 15px;
+        }
+        .btn-vote {
+            background: none;
+            border: none;
+            color: var(--text-dim);
+            cursor: pointer;
+            font-size: 0.9rem;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            transition: 0.2s;
+        }
+        .btn-vote:hover { color: var(--secondary-color); }
+        .btn-vote.active-like { color: var(--success-color); font-weight: bold; }
+        .btn-vote.active-dislike { color: var(--primary-color); font-weight: bold; }
+
         .comment-section {
             padding: 15px;
             background: rgba(0,0,0,0.2);
@@ -337,13 +358,16 @@
             <!-- ADMIN PANEL UNTUK KAMU INPUT SCRIPT -->
             <div class="admin-section">
                 <h3 style="margin-bottom:15px; color:var(--secondary-color)">➕ Tambah Script Baru (Hanya Terlihat Olehmu)</h3>
+                <p style="font-size: 0.8rem; margin-bottom: 10px; color: var(--text-dim);">Semua orang bisa mengunggah script ke sini.</p>
                 <div class="admin-form">
                     <input type="text" id="addTitle" placeholder="Judul Script (Contoh: Blox Fruits Hub)">
-                    <input type="text" id="addDesc" placeholder="Deskripsi Singkat">
-                    <input type="text" id="addImg" placeholder="Link Gambar (URL)">
+                    <textarea id="addDesc" placeholder="Deskripsi Singkat" style="height: 60px;"></textarea>
+                    <label style="display:block; margin-bottom:5px; font-size:0.8rem;">Upload Foto (PNG/JPG):</label>
+                    <input type="file" id="addImgFile" accept="image/png, image/jpeg">
                     <input type="text" id="addLink" placeholder="Link Linkvertise">
                     <input type="text" id="addSource" placeholder="Link Rscripts.net">
-                    <input type="text" id="addRaw" placeholder="Link Raw Script (untuk Download .txt)">
+                    <label style="display:block; margin-bottom:5px; font-size:0.8rem;">Upload Script File (.txt / .lua):</label>
+                    <input type="file" id="addScriptFile" accept=".txt, .lua">
                     <button class="btn-add" onclick="addNewScript()">Tambahkan ke Daftar</button>
                 </div>
             </div>
@@ -364,39 +388,31 @@
             projectId: "linkverthis",
             storageBucket: "linkverthis.firebasestorage.app",
             messagingSenderId: "187706489651",
-            appId: "1:187706489651:web:b3f2cf88e4283fa4e85c46"
+            appId: "1:187706489651:web:b3f2cf88e4283fa4e85c46",
+            measurementId: "G-L5JYYQM6QC"
         };
 
         // Inisialisasi Firebase
         firebase.initializeApp(firebaseConfig);
         const auth = firebase.auth();
+        const db = firebase.firestore();
+        const storage = firebase.storage();
 
         // ==========================================
-        // DATA SCRIPT KAMU (ISI DI SINI)
+        // LOGIKA TAMPILAN SCRIPT
         // ==========================================
-        let scriptsData = [
-            // Contoh cara isi:
-            // {
-            //     title: "Blox Fruits Hub",
-            //     desc: "Auto Farm & Raid",
-            //     img: "https://link-gambar.com/foto.jpg",
-            //     link: "https://linkvertise.com/...",
-            //     source: "https://rscripts.net/...",
-            //     raw: "https://raw.githubusercontent.com/..."
-            // },
-        ];
-
-        // Fungsi untuk menampilkan script ke layar
-        function renderScripts(filter = "") {
+        function renderScripts(docs = [], filter = "") {
             const grid = document.getElementById('scriptGrid');
-            grid.innerHTML = ""; // Kosongkan dulu
+            grid.innerHTML = "";
+            const user = auth.currentUser;
 
-            const filteredData = scriptsData.filter(s => 
-                s.title.toLowerCase().includes(filter.toLowerCase()) || 
-                s.desc.toLowerCase().includes(filter.toLowerCase())
-            );
+            const filteredDocs = docs.filter(doc => {
+                const data = doc.data();
+                return data.title.toLowerCase().includes(filter.toLowerCase()) || 
+                       data.desc.toLowerCase().includes(filter.toLowerCase());
+            });
 
-            if (filteredData.length === 0) {
+            if (filteredDocs.length === 0) {
                 grid.innerHTML = `
                     <div style="grid-column: 1/-1; text-align: center; padding: 50px; color: var(--text-dim); background: rgba(255,255,255,0.05); border-radius: 15px;">
                         <p>🚫 Belum ada script yang ditemukan.</p>
@@ -405,7 +421,14 @@
                 return;
             }
 
-            filteredData.forEach((script, index) => {
+            filteredDocs.forEach((doc) => {
+                const script = doc.data();
+                const likedBy = script.likedBy || [];
+                const dislikedBy = script.dislikedBy || [];
+                
+                const isLiked = user && likedBy.includes(user.uid);
+                const isDisliked = user && dislikedBy.includes(user.uid);
+
                 grid.innerHTML += `
                     <div class="card">
                         <img src="${script.img || 'https://via.placeholder.com/400x200?text=No+Image'}" class="card-img">
@@ -413,19 +436,26 @@
                             <h3 class="card-title">${script.title}</h3>
                             <p class="card-desc">${script.desc}</p>
                             <div class="card-stats">
-                                <span>👁️ 0 views</span>
-                                <span>📥 0 ditransfer</span>
+                                <div class="vote-container">
+                                    <button class="btn-vote ${isLiked ? 'active-like' : ''}" onclick="toggleVote('${doc.id}', 'like')">
+                                        👍 <span>${likedBy.length}</span>
+                                    </button>
+                                    <button class="btn-vote ${isDisliked ? 'active-dislike' : ''}" onclick="toggleVote('${doc.id}', 'dislike')">
+                                        👎 <span>${dislikedBy.length}</span>
+                                    </button>
+                                </div>
+                                <span>📥 0 dl</span>
                             </div>
                             <a href="${script.link}" target="_blank" rel="noopener noreferrer" class="btn-get">GET SCRIPT (ADS)</a>
-                            <button class="btn-download" onclick="downloadScript('${script.title}', 'loadstring(game:HttpGet(\\'${script.raw}\\'))()')">DOWNLOAD .TXT</button>
+                            <button class="btn-download" onclick="downloadScript('${script.title}', '${script.rawContent.replace(/'/g, "\\'")}')">DOWNLOAD .TXT</button>
                             <a href="${script.source}" target="_blank" rel="noopener noreferrer" class="btn-source">View on Rscripts.net</a>
                             <button class="btn-login" style="margin-top:10px; display:block; width:100%; text-align:center; background:none; border:none; color:var(--text-dim)" onclick="toggleComments(this)">Lihat Komentar</button>
                         </div>
-                        <div class="comment-section">
+                        <div class="comment-section" id="comments-${doc.id}">
                             <div class="comment-list"></div>
                             <div class="comment-input-container" style="margin-top:10px;">
                                 <input type="text" class="comment-input" placeholder="Tulis komentar..." style="width:70%; padding:5px; border-radius:4px; border:none;">
-                                <button onclick="postComment(this)" style="width:25%; padding:5px; cursor:pointer;">Kirim</button>
+                                <button onclick="postComment(this, '${doc.id}')" style="width:25%; padding:5px; cursor:pointer;">Kirim</button>
                             </div>
                         </div>
                     </div>
@@ -433,26 +463,111 @@
             });
         }
 
-        // Fungsi Tambah Script Baru lewat Form
-        function addNewScript() {
-            const newScript = {
-                title: document.getElementById('addTitle').value,
-                desc: document.getElementById('addDesc').value,
-                img: document.getElementById('addImg').value,
-                link: document.getElementById('addLink').value,
-                source: document.getElementById('addSource').value,
-                raw: document.getElementById('addRaw').value
-            };
+        // Ambil Data Real-time dari Firestore
+        let allScripts = [];
+        db.collection("scripts").onSnapshot((snapshot) => {
+            allScripts = snapshot.docs;
+            renderScripts(allScripts);
+            
+            // Load Komentar untuk setiap script
+            snapshot.docs.forEach(doc => {
+                db.collection("scripts").doc(doc.id).collection("comments").orderBy("createdAt", "asc")
+                .onSnapshot(commentSnap => {
+                    const list = document.querySelector(`#comments-${doc.id} .comment-list`);
+                    if(list) {
+                        list.innerHTML = "";
+                        commentSnap.forEach(cDoc => {
+                            const c = cDoc.data();
+                            list.innerHTML += `<div style="margin-bottom:5px; font-size:0.85rem;"><b style="color:var(--secondary-color)">${c.userName}:</b> ${c.text}</div>`;
+                        });
+                    }
+                });
+            });
+        });
 
-            if(!newScript.title) return alert("Minimal isi judul!");
-            
-            scriptsData.push(newScript);
-            renderScripts();
-            
-            // Reset Form
-            document.querySelectorAll('.admin-form input').forEach(i => i.value = "");
-            alert("Berhasil ditambah! Ingat, ini hanya sementara. Untuk permanen, copy data di console (F12) ke dalam kode scriptsData di VSCode.");
-            console.log("Salin ini ke scriptsData di kode kamu:", JSON.stringify(scriptsData, null, 2));
+        // --- LOGIKA LIKE & DISLIKE ---
+        async function toggleVote(scriptId, type) {
+            const user = auth.currentUser;
+            if (!user) return alert("Kamu harus login dulu untuk memberikan vote!");
+
+            const docRef = db.collection("scripts").doc(scriptId);
+            const doc = await docRef.get();
+            const data = doc.data();
+
+            let likedBy = data.likedBy || [];
+            let dislikedBy = data.dislikedBy || [];
+
+            if (type === 'like') {
+                if (likedBy.includes(user.uid)) {
+                    likedBy = likedBy.filter(uid => uid !== user.uid);
+                } else {
+                    likedBy.push(user.uid);
+                    dislikedBy = dislikedBy.filter(uid => uid !== user.uid);
+                }
+            } else {
+                if (dislikedBy.includes(user.uid)) {
+                    dislikedBy = dislikedBy.filter(uid => uid !== user.uid);
+                } else {
+                    dislikedBy.push(user.uid);
+                    likedBy = likedBy.filter(uid => uid !== user.uid);
+                }
+            }
+
+            await docRef.update({ likedBy, dislikedBy });
+            // UI otomatis terupdate karena onSnapshot
+        }
+
+        // Fungsi Tambah Script Baru dengan Upload ke Storage
+        async function addNewScript() {
+            const title = document.getElementById('addTitle').value;
+            const desc = document.getElementById('addDesc').value;
+            const imgFile = document.getElementById('addImgFile').files[0];
+            const scriptFile = document.getElementById('addScriptFile').files[0];
+            const link = document.getElementById('addLink').value;
+            const source = document.getElementById('addSource').value;
+
+            if(!title || !imgFile || !scriptFile) return alert("Isi Judul, Upload Foto, dan Upload Script!");
+
+            const btn = document.querySelector('.btn-add');
+            btn.innerText = "Mengunggah...";
+            btn.disabled = true;
+
+            try {
+                // 1. Upload Foto ke Firebase Storage
+                const imgRef = storage.ref(`images/${Date.now()}_${imgFile.name}`);
+                await imgRef.put(imgFile);
+                const imgUrl = await imgRef.getDownloadURL();
+
+                // 2. Baca Isi File Script
+                const rawContent = await scriptFile.text();
+
+                // 3. Simpan Data ke Firestore
+                await db.collection("scripts").add({
+                    title,
+                    desc,
+                    img: imgUrl,
+                    link,
+                    source,
+                    rawContent: rawContent,
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                    likedBy: [],
+                    dislikedBy: []
+                });
+
+                alert("Script Berhasil Diupload!");
+                // Reset Form
+                document.getElementById('addTitle').value = "";
+                document.getElementById('addDesc').value = "";
+                document.getElementById('addImgFile').value = "";
+                document.getElementById('addScriptFile').value = "";
+                document.getElementById('addLink').value = "";
+                document.getElementById('addSource').value = "";
+            } catch (err) {
+                console.error(err);
+                alert("Gagal upload: " + err.message);
+            }
+            btn.innerText = "Tambahkan ke Daftar";
+            btn.disabled = false;
         }
 
         // --- LOGIKA LOGIN FIREBASE ---
@@ -462,6 +577,12 @@
         }
 
         function login(providerName) {
+            if (window.location.protocol === 'file:') {
+                alert("Waduh! Login tidak bisa jalan kalau kamu buka file HTML langsung (double-click).\n\n" +
+                      "Solusinya:\n1. Pakai ekstensi 'Live Server' di VS Code\n2. Atau upload website ini ke GitHub/Netlify.");
+                return;
+            }
+
             let provider;
             if (providerName === 'google') {
                 provider = new firebase.auth.GoogleAuthProvider();
@@ -486,6 +607,7 @@
         auth.onAuthStateChanged((user) => {
             const info = document.getElementById('userInfo');
             if (user) {
+                    renderScripts(allScripts); // Refresh UI untuk update status tombol vote
                 // Ambil foto profil kecil jika ada
                 const photo = user.photoURL ? `<img src="${user.photoURL}" style="width:20px; border-radius:50%; vertical-align:middle; margin-right:5px;">` : "";
                 info.innerHTML = `${photo} Halo, <b>${user.displayName || user.email}</b> | <span class="btn-login" onclick="logout()">Logout</span>`;
@@ -513,7 +635,7 @@
             section.style.display = section.style.display === 'block' ? 'none' : 'block';
         }
 
-        function postComment(btn) {
+        async function postComment(btn, scriptId) {
             const user = auth.currentUser;
             if (!user) {
                 alert("Kamu harus login dulu untuk berkomentar!");
@@ -524,22 +646,23 @@
             const input = btn.previousElementSibling;
             if (input.value.trim() === "") return;
 
-            const list = btn.parentElement.previousElementSibling;
-            const newComment = document.createElement('div');
-            newComment.style.marginBottom = "5px";
-            newComment.style.fontSize = "0.85rem";
-            newComment.innerHTML = `<b style="color:var(--secondary-color)">${userName}:</b> ${input.value}`;
-            
-            list.appendChild(newComment);
+            try {
+                await db.collection("scripts").doc(scriptId).collection("comments").add({
+                    userName: userName,
+                    text: input.value,
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+            } catch (err) {
+                alert("Gagal mengirim komentar: " + err.message);
+            }
             input.value = "";
         }
 
-        renderScripts(); // Panggil pertama kali
+        renderScripts([]); // Panggil pertama kali dengan array kosong
 
         // Logika Fitur Pencarian
         document.getElementById('searchInput').addEventListener('input', function() {
-            renderScripts(this.value);
+            renderScripts(allScripts, this.value);
         });
     </script>
-</body>
-</html>
+</body></html>
